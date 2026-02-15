@@ -33,6 +33,28 @@
 #define ALLOW_GROUP "kbdlight"
 #endif /* ifndef ALLOW_GROUP */
 
+static int read_int_from_file(const char *path, int *value) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        fprintf(stderr, "open(%s) failed: %s\n", path, strerror(errno));
+        return 0;
+    }
+
+    char buf[64];
+    ssize_t n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+
+    if (n <= 0) return 0;
+    buf[n] = '\0';
+
+    char *end = NULL;
+    long v = strtol(buf, &end, 10);
+    if (end == buf) return 0;
+
+    *value = (int)v;
+    return 1;
+}
+
 static int is_user_in_group(gid_t uid, const char *group_name) {
     struct group *gr = getgrnam(group_name);
     if (!gr) return 0;
@@ -136,6 +158,32 @@ static int do_set_brightness(int level) {
     return 0;
 }
 
+static int do_get_level(void) {
+    int level;
+    if (!read_int_from_file(SYSFS_PATH_BRIGHTNESS, &level)) {
+        fprintf(stderr, "Failed to read brightness\n");
+        return 1;
+    }
+
+    printf("%d\n", level);
+    return 0;
+}
+
+static int do_step_level(int delta) {
+    int level;
+    if (!read_int_from_file(SYSFS_PATH_BRIGHTNESS, &level)) {
+        fprintf(stderr, "Failed to read brightness\n");
+        return 1;
+    }
+
+    level += delta;
+
+    if (level < 0) level = 0;
+    if (level > 255) level = 255;
+
+    return do_set_brightness(level);
+}
+
 int main(int argc, char **argv) {
     // Authorization: only allow real user who is in group ALLOW_GROUP
     uid_t ruid = getuid();   // real uid
@@ -156,8 +204,27 @@ int main(int argc, char **argv) {
     }
 
     if (argc == 2) {
-        if (strcmp(argv[1], "--get") == 0)
+        if (strcmp(argv[1], "--color") == 0)
             return do_get();
+
+        if (strcmp(argv[1], "--level") == 0)
+            return do_get_level();
+
+        // +N / -N
+        if (argv[1][0] == '+' || argv[1][0] == '-') {
+            int delta;
+            if (!parse_u8(argv[1] + 1, &delta)) {
+                fprintf(stderr, "Invalid delta value.\n");
+                return 1;
+            }
+
+            if (argv[1][0] == '-')
+                delta = -delta;
+
+            return do_step_level(delta);
+        }
+
+        // LEVEL set
         int level;
         if (!parse_u8(argv[1], &level)) {
             fprintf(stderr, "Invalid value. Use integer 0..255.\n");
@@ -169,9 +236,11 @@ int main(int argc, char **argv) {
 
     if (argc != 4) {
         fprintf(stderr, "Usage:\n");
-        fprintf(stderr, "  %s R G B   (0..255)\n", argv[0]);
-        fprintf(stderr, "  %s LEVEL   (0..255)\n", argv[0]);
-        fprintf(stderr, "  %s --get\n", argv[0]);
+        fprintf(stderr, "  %s R G B        (0..255)\n", argv[0]);
+        fprintf(stderr, "  %s LEVEL        (0..255)\n", argv[0]);
+        fprintf(stderr, "  %s +N / -N      adjust brightness\n", argv[0]);
+        fprintf(stderr, "  %s --color      show RGB\n", argv[0]);
+        fprintf(stderr, "  %s --level      show brightness\n", argv[0]);
         return 1;
     }
 
